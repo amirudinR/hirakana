@@ -21,6 +21,9 @@ npm run preview
 - Mode campur, hiragana, dan katakana
 - Soal romaji ke kana dan kana ke romaji
 - Umpan balik langsung dan antrean kartu untuk diulang
+- Mode listening dengan audio Web Speech API
+- Tombol dengar kana di soal biasa
+- Tabel lengkap hiragana & katakana dengan audio
 - Progress, streak, tingkat ingatan, dan kartu review tersimpan di `localStorage`
 - Tema terang/gelap yang mengikuti preferensi browser untuk pengguna baru
 - Responsif untuk desktop dan mobile
@@ -30,6 +33,10 @@ npm run preview
 ![Tampilan desktop](docs/perfect-desktop-dashboard2.png)
 
 ![Tampilan mobile](docs/perfect-mobile-light-answer.png)
+
+## Catatan browser
+
+Mode dengar memakai Web Speech API (`speechSynthesis`). Ketersediaan suara Jepang bisa berbeda per perangkat. Jika browser tidak mendukung, tombol dengar dinonaktifkan dan mode visual tetap bisa dipakai.
 
 ## Teknologi
 

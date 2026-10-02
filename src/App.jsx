@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { groups, kanaCards } from './data/kana'
+import { cancelSpeech, speakKana, speechSupported, trackVoices } from './speech'
 
 const STORAGE_KEY = 'hirakana-mastery-v1'
 const THEME_KEY = 'hirakana-theme-v1'
@@ -13,6 +14,11 @@ const modes = [
   { id: 'mixed', label: 'Campur', note: 'Hiragana + Katakana' },
   { id: 'hiragana', label: 'Hiragana', note: 'あいうえお' },
   { id: 'katakana', label: 'Katakana', note: 'アイウエオ' },
+]
+
+const practiceStyles = [
+  { id: 'standard', label: 'Standar', note: 'soal biasa' },
+  { id: 'listening', label: 'Dengarkan', note: 'jawab dari suara' },
 ]
 
 const freshMastery = () => Object.fromEntries(kanaCards.map((card) => [card.id, 0]))
@@ -51,7 +57,7 @@ function readTheme() {
 function readBestStreak() {
   try {
     const saved = localStorage.getItem(BEST_STREAK_KEY)
-    if (!saved || !/^\\d+$/.test(saved.trim())) return 0
+    if (!saved || !/^\d+$/.test(saved.trim())) return 0
     const value = Number(saved.trim())
     return Number.isSafeInteger(value) ? value : 0
   } catch {
@@ -91,7 +97,7 @@ function shuffle(items) {
 
 // Arah soal: 'kana->romaji' (tebak bacaan) atau 'romaji->kana' (tebak aksara).
 function getOptions(card, pool, direction) {
-  if (direction === 'romaji->kana') {
+  if (direction === 'romaji->kana' || direction === 'audio->kana') {
     // Opsi berupa kana dari script yang sama, tanpa romaji yang sama dengan jawaban.
     const distractorPool = [...new Set(
       pool
@@ -115,7 +121,7 @@ function App() {
   const [mode, setMode] = useState('mixed')
   const [theme, setTheme] = useState(readTheme)
   const [mastery, setMastery] = useState(readMastery)
-  const [view, setView] = useState('dashboard') // 'dashboard' | 'quiz' | 'summary'
+  const [view, setView] = useState('dashboard') // 'dashboard' | 'quiz' | 'summary' | 'table'
   const [question, setQuestion] = useState(null)
   const [options, setOptions] = useState([])
   const [selected, setSelected] = useState(null)
@@ -128,10 +134,16 @@ function App() {
   const [reviewIds, setReviewIds] = useState([])
   const [storageOk, setStorageOk] = useState(true)
   const [activeGroups, setActiveGroups] = useState(readActiveGroups)
+  const [practiceStyle, setPracticeStyle] = useState('standard')
+  const [audioMessage, setAudioMessage] = useState('')
+  const [audioSupported] = useState(speechSupported())
   const inputRef = useRef(null)
   const nextButtonRef = useRef(null)
   const pageTitleRef = useRef(null)
+  const playButtonRef = useRef(null)
   const isMixedDirection = question?.direction === 'romaji->kana'
+  const isListening = question?.direction === 'audio->kana'
+  const picksKana = question?.direction === 'romaji->kana' || isListening
 
   const pool = useMemo(
     () => kanaCards.filter(
@@ -170,6 +182,17 @@ function App() {
     else setStorageOk(true)
   }, [activeGroups])
 
+  useEffect(() => () => {
+    cancelSpeech()
+  }, [])
+
+  useEffect(() => trackVoices(), [])
+
+  useEffect(() => {
+    cancelSpeech()
+    setAudioMessage('')
+  }, [view, question?.id, practiceStyle, mode, activeGroups])
+
   // Sinkronkan warna browser dengan tema agar address bar tidak tetap terang.
   useEffect(() => {
     const meta = document.querySelector('meta[name="theme-color"]')
@@ -193,9 +216,10 @@ function App() {
 
   useEffect(() => {
     if (view !== 'quiz' || !question || selected !== null) return
-    if (isMixedDirection) document.querySelector('.choices button')?.focus({ preventScroll: true })
+    if (isListening) playButtonRef.current?.focus({ preventScroll: true })
+    else if (picksKana) document.querySelector('.choices button')?.focus({ preventScroll: true })
     else inputRef.current?.focus({ preventScroll: true })
-  }, [view, question?.id, isMixedDirection, selected])
+  }, [view, question?.id, isListening, picksKana, selected])
 
   const chooseQuestion = (nextReviewIds = reviewIds, excludeId = null) => {
     if (pool.length === 0) {
@@ -213,7 +237,9 @@ function App() {
     const card = reviewPool.length > 0
       ? shuffle(reviewPool)[0]
       : source[Math.floor(Math.random() * source.length)]
-    const direction = mode === 'mixed' && Math.random() < 0.5 ? 'romaji->kana' : 'kana->romaji'
+    const direction = practiceStyle === 'listening'
+      ? 'audio->kana'
+      : mode === 'mixed' && Math.random() < 0.5 ? 'romaji->kana' : 'kana->romaji'
     setQuestion({ ...card, direction })
     setOptions(getOptions(card, pool, direction))
     setSelected(null)
@@ -241,6 +267,19 @@ function App() {
     setReviewIds([])
   }
 
+  const handlePracticeStyleChange = (nextStyle) => {
+    if (nextStyle === practiceStyle) return
+    setPracticeStyle(nextStyle)
+    cancelSpeech()
+    setQuestion(null)
+    setOptions([])
+    setSelected(null)
+    setAnswerState('idle')
+    setReviewIds([])
+    setTypedAnswer('')
+    setAudioMessage('')
+  }
+
   // Ganti grup aktif: buang soal & antrean agar kartu di luar grup tidak
   // menggantung di review queue (mereka tidak pernah terambil sebagai soal).
   const toggleGroup = (groupId) => {
@@ -258,8 +297,19 @@ function App() {
   }
 
   const expectedAnswer = question
-    ? question.direction === 'romaji->kana' ? question.kana : question.romaji
+    ? question.direction === 'kana->romaji' ? question.romaji : question.kana
     : ''
+
+  const playKana = (text) => {
+    const result = speakKana(text, {
+      onError: () => setAudioMessage('Audio tidak dapat diputar di browser ini.'),
+      onEnd: () => setAudioMessage(''),
+    })
+    if (result === 'unsupported') setAudioMessage('Audio tidak tersedia di browser ini.')
+    else if (result === 'playing-no-japanese-voice') setAudioMessage('Suara Jepang tidak tersedia di perangkat ini.')
+    else if (result === 'error') setAudioMessage('Audio tidak dapat diputar di browser ini.')
+    else setAudioMessage('')
+  }
 
   // Samakan bentuk jawaban sebelum dibandingkan & disimpan agar jawaban dari
   // input ketik (mis. "KA" atau " ka ") tetap menyorot tombol pilihannya.
@@ -329,6 +379,7 @@ function App() {
             <h1 ref={pageTitleRef} tabIndex={-1}>Belajar kana,<br /><em>pelan-pelan jadi bisa.</em></h1>
             <p className="intro-text">Sesi kecil, pengulangan cerdas, dan sedikit rasa seperti membuka buku catatan Jepang baru.</p>
             <button className="primary-action" type="button" onClick={() => startGame()}>Mulai latihan <span aria-hidden="true">→</span></button>
+            <button className="text-link" type="button" onClick={() => setView('table')}>Lihat tabel lengkap</button>
           </div>
 
           <aside className="stats-note">
@@ -371,6 +422,18 @@ function App() {
             </div>
           </div>
 
+          <div className="style-section">
+            <div className="section-heading"><span>03</span><div><h2 id="style-heading">Cara berlatih</h2><p>Standar tetap mengandalkan lihat-tulis, listening melatih telinga.</p></div></div>
+            <div className="style-grid" role="group" aria-labelledby="style-heading">
+              {practiceStyles.map((item) => (
+                <button className={`group-chip ${practiceStyle === item.id ? 'active' : ''}`} key={item.id} type="button" aria-pressed={practiceStyle === item.id} onClick={() => handlePracticeStyleChange(item.id)}>
+                  <span className="group-check" aria-hidden="true">{practiceStyle === item.id ? '✓' : ''}</span>
+                  <strong>{item.label}</strong><small>{item.note}</small>
+                </button>
+              ))}
+            </div>
+          </div>
+
           <div className="tip-strip"><span className="tip-icon" aria-hidden="true">✦</span><p><strong>Ritme kecil lebih kuat.</strong> Lima menit setiap hari lebih berarti daripada maraton sekali seminggu.</p><span className="tip-kana" lang="ja" aria-hidden="true">毎日</span></div>
         </section>
       )}
@@ -379,7 +442,7 @@ function App() {
         <section className="quiz-page page-enter">
           <div className="quiz-meta">
             <button className="back-button" type="button" onClick={() => setView(roundTotal > 0 ? 'summary' : 'dashboard')}>← kembali ke meja</button>
-            <span>latihan {modes.find((item) => item.id === mode)?.label ?? mode}</span>
+            <span>latihan {modes.find((item) => item.id === mode)?.label ?? mode} · {practiceStyle === 'listening' ? 'dengar' : 'standar'}</span>
             <button className="back-button end-session" type="button" onClick={() => setView('summary')}>selesaikan sesi</button>
             <span className="score-pill" aria-label={`Skor ${roundScore} dari ${roundTotal}`}>{roundScore} / {roundTotal}</span>
           </div>
@@ -392,25 +455,39 @@ function App() {
           <div className="quiz-layout">
             <div className="quiz-main">
               <p className="sr-only" aria-live="polite">
-                {`Soal ${questionNumber}. ${isMixedDirection
-                  ? `Pilih aksara yang tepat untuk bacaan ${question.romaji}.`
-                  : `Kana ${question.kana}, ${question.script}.`}`}
+                {`Soal ${questionNumber}. ${isListening
+                  ? 'Dengarkan audio, lalu pilih aksara yang tepat.'
+                  : isMixedDirection
+                    ? `Pilih aksara yang tepat untuk bacaan ${question.romaji}.`
+                    : `Kana ${question.kana}, ${question.script}.`}`}
               </p>
               <div className="question-header">
                 <div>
                   <p className="eyebrow">lembar latihan / {questionNumberText}</p>
-                  <h1 ref={pageTitleRef} tabIndex={-1}>{isMixedDirection ? `Tulis dalam ${question.script}...` : 'Huruf ini dibaca...'}</h1>
+                  <h1 ref={pageTitleRef} tabIndex={-1}>{isListening ? 'Dengarkan, lalu jawab.' : isMixedDirection ? `Tulis dalam ${question.script}...` : 'Huruf ini dibaca...'}</h1>
                 </div>
                 <div className="streak-stamp"><span>STREAK</span><strong>{streak}</strong></div>
               </div>
               <div className={`kana-sheet answer-${answerState}`}>
                 <div className="sheet-corner" lang="ja" aria-hidden="true">練習</div>
-                <div className={`kana-character ${isMixedDirection ? 'prompt-romaji' : ''}`} lang={isMixedDirection ? 'en' : 'ja'}>{isMixedDirection ? question.romaji : question.kana}</div>
-                {!isMixedDirection && <div className="kana-script">{question.script}</div>}
+                {isListening ? (
+                  <div className="listen-sheet">
+                    <button ref={playButtonRef} className="listen-button listen-button-large" type="button" onClick={() => playKana(question.kana)} disabled={!audioSupported} aria-label="Dengarkan audio kana">🔊 Dengarkan</button>
+                    <p className="listen-prompt" aria-hidden="true">Putar audio, lalu pilih aksaranya.</p>
+                    {audioMessage && <p className="audio-status" role="status">{audioMessage}</p>}
+                  </div>
+                ) : (
+                  <div className={`kana-character ${isMixedDirection ? 'prompt-romaji' : ''}`} lang={isMixedDirection ? 'en' : 'ja'}>{isMixedDirection ? question.romaji : question.kana}</div>
+                )}
+                {!isListening && !isMixedDirection && <div className="kana-script">{question.script}</div>}
+                {!isListening && (
+                  <button className="listen-button listen-button-small" type="button" onClick={() => playKana(question.kana)} disabled={!audioSupported} aria-label="Dengarkan bacaan kana ini">🔊 dengarkan</button>
+                )}
+                {audioMessage && !isListening && <p className="audio-status" role="status">{audioMessage}</p>}
                 <div className="sheet-rule rule-one" /><div className="sheet-rule rule-two" />
               </div>
               <div>
-                <p className="answer-label" id="answer-label">{isMixedDirection ? 'pilih aksara yang tepat' : 'pilih suara yang tepat'}</p>
+                <p className="answer-label" id="answer-label">{isListening ? 'pilih aksara yang kamu dengar' : picksKana ? 'pilih aksara yang tepat' : 'pilih suara yang tepat'}</p>
                 <div className="choices" role="group" aria-labelledby="answer-label">
                   {options.map((option, index) => {
                     const isChosen = selected !== null && normalizeAnswer(selected) === normalizeAnswer(option)
@@ -420,16 +497,16 @@ function App() {
                         key={option}
                         type="button"
                         disabled={selected !== null}
-                        className={`choice ${isMixedDirection ? 'choice-kana' : ''} ${isChosen ? 'chosen' : ''} ${isChosen && answerState === 'wrong' ? 'wrong-pick' : ''} ${isChosen && answerState === 'correct' ? 'correct' : ''} ${isReveal ? 'reveal' : ''}`}
+                        className={`choice ${picksKana ? 'choice-kana' : ''} ${isChosen ? 'chosen' : ''} ${isChosen && answerState === 'wrong' ? 'wrong-pick' : ''} ${isChosen && answerState === 'correct' ? 'correct' : ''} ${isReveal ? 'reveal' : ''}`}
                         onClick={() => finishAnswer(option)}
                       >
                         <span aria-hidden="true">{String.fromCharCode(65 + index)}</span>
-                        <span lang={isMixedDirection ? 'ja' : 'en'}>{option}</span>
+                        <span lang={picksKana ? 'ja' : 'en'}>{option}</span>
                       </button>
                     )
                   })}
                 </div>
-                {!isMixedDirection && (
+                {!picksKana && (
                   <form className="typed-form" onSubmit={handleTypedSubmit}><label htmlFor="romaji-answer">atau tulis romaji</label><div><input id="romaji-answer" name="romaji" ref={inputRef} value={typedAnswer} onChange={(event) => setTypedAnswer(event.target.value)} placeholder="ketik di sini..." disabled={selected !== null} autoComplete="off" autoCapitalize="off" autoCorrect="off" spellCheck={false} inputMode="text" maxLength={12} /><button type="submit" disabled={selected !== null || !typedAnswer.trim()}>cek</button></div></form>
                 )}
               </div>
@@ -447,7 +524,7 @@ function App() {
             <aside className="quiz-side">
               <div className="mini-note">
                 <p className="note-label">kartu ini</p>
-                <div className="mini-kana" lang={isMixedDirection ? 'en' : 'ja'}>{isMixedDirection ? question.romaji : question.kana}</div>
+                <div className="mini-kana" lang={isListening ? 'ja' : isMixedDirection ? 'en' : 'ja'}>{isListening ? (selected === null ? '♪' : question.kana) : isMixedDirection ? question.romaji : question.kana}</div>
                 <p>{currentMastery === 0 ? 'Belum tersentuh' : `${currentMastery} / ${MASTERY_CAP} tingkat ingatan`}</p>
                 <div className="dots" aria-hidden="true">{Array.from({ length: MASTERY_CAP }, (_, i) => i + 1).map((dot) => <i className={dot <= currentMastery ? 'filled' : ''} key={dot} />)}</div>
               </div>
@@ -496,6 +573,42 @@ function App() {
                 <button className="back-button" type="button" onClick={() => setView('dashboard')}>kembali ke meja</button>
               </div>
             </div>
+          </div>
+        </section>
+      )}
+
+      {view === 'table' && (
+        <section className="table-page page-enter">
+          <div className="quiz-meta">
+            <button className="back-button" type="button" onClick={() => setView('dashboard')}>← kembali ke meja</button>
+            <button className="back-button end-session" type="button" onClick={() => startGame()}>mulai latihan</button>
+            <span className="score-pill" aria-label={`Sudah tersentuh ${touchedCount} kartu`}>{touchedCount} kartu</span>
+          </div>
+          <h1 ref={pageTitleRef} tabIndex={-1}>Tabel lengkap kana</h1>
+          <p className="intro-text">Hiragana dan katakana berdampingan. Klik sel untuk mendengar bunyinya.</p>
+          {audioMessage && <p className="audio-status" role="status">{audioMessage}</p>}
+          <div className="table-grid">
+            {groups.map((group) => (
+              <article className="table-card" key={group.id}>
+                <h2>{group.label}</h2>
+                <p>{group.note}</p>
+                <div className="kana-table-columns">
+                  {['hiragana', 'katakana'].map((script) => (
+                    <div className="kana-table-script" key={script}>
+                      <p className="script-label">{script}</p>
+                      <div className="kana-table-grid">
+                        {kanaCards.filter((card) => card.script === script && card.group === group.id).map((card) => (
+                          <button className="kana-cell" key={card.id} type="button" aria-label={`Dengarkan ${card.kana}, baca ${card.romaji}`} onClick={() => playKana(card.kana)}>
+                            <span className="kana-cell-char" lang="ja">{card.kana}</span>
+                            <small lang="en">{card.romaji}</small>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </article>
+            ))}
           </div>
         </section>
       )}

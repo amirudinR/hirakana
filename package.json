@@ -2,6 +2,15 @@
   "name": "hirakana",
   "private": true,
   "version": "0.1.0",
+  "description": "Aplikasi latihan hiragana dan katakana berbasis React, Vite, dan localStorage.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/amirudinR/hirakana.git"
+  },
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",

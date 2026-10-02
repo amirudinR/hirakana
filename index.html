@@ -4,6 +4,16 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#f4efe5" />
+    <meta name="description" content="Latihan hiragana dan katakana ringkas dengan kartu, mode campur, dan progres lokal." />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <script>
+      try {
+        const stored = localStorage.getItem('hirakana-theme-v1');
+        const dark = stored === 'dark' || (!stored && window.matchMedia('(prefers-color-scheme: dark)').matches);
+        document.documentElement.classList.toggle('theme-dark', dark);
+        document.querySelector('meta[name="theme-color"]')?.setAttribute('content', dark ? '#252522' : '#f4efe5');
+      } catch {}
+    </script>
     <title>Hirakana - Latihan Kana</title>
   </head>
   <body>

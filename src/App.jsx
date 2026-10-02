@@ -26,7 +26,7 @@ function readMastery() {
     const result = {}
     for (const [id, value] of Object.entries(saved)) {
       if (typeof value === 'number' && Number.isFinite(value)) {
-        result[id] = Math.max(0, Math.min(MASTERY_CAP, Math.round(value)))
+        if (id !== '__proto__' && id !== 'constructor' && id !== 'prototype') result[id] = Math.max(0, Math.min(MASTERY_CAP, Math.round(value)))
       }
     }
     for (const [id, value] of Object.entries(freshMastery())) {
@@ -40,7 +40,9 @@ function readMastery() {
 
 function readTheme() {
   try {
-    return localStorage.getItem(THEME_KEY) === 'dark' ? 'dark' : 'light'
+    const saved = localStorage.getItem(THEME_KEY)
+    if (saved === 'dark' || saved === 'light') return saved
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
   } catch {
     return 'light'
   }
@@ -48,8 +50,10 @@ function readTheme() {
 
 function readBestStreak() {
   try {
-    const saved = Number.parseInt(localStorage.getItem(BEST_STREAK_KEY), 10)
-    return Number.isFinite(saved) && saved >= 0 ? saved : 0
+    const saved = localStorage.getItem(BEST_STREAK_KEY)
+    if (!saved || !/^\\d+$/.test(saved.trim())) return 0
+    const value = Number(saved.trim())
+    return Number.isSafeInteger(value) ? value : 0
   } catch {
     return 0
   }
@@ -126,6 +130,8 @@ function App() {
   const [activeGroups, setActiveGroups] = useState(readActiveGroups)
   const inputRef = useRef(null)
   const nextButtonRef = useRef(null)
+  const pageTitleRef = useRef(null)
+  const isMixedDirection = question?.direction === 'romaji->kana'
 
   const pool = useMemo(
     () => kanaCards.filter(
@@ -146,18 +152,22 @@ function App() {
 
   useEffect(() => {
     if (!safeSet(STORAGE_KEY, JSON.stringify(mastery))) setStorageOk(false)
+    else setStorageOk(true)
   }, [mastery])
 
   useEffect(() => {
     if (!safeSet(THEME_KEY, theme)) setStorageOk(false)
+    else setStorageOk(true)
   }, [theme])
 
   useEffect(() => {
     if (!safeSet(BEST_STREAK_KEY, String(bestStreak))) setStorageOk(false)
+    else setStorageOk(true)
   }, [bestStreak])
 
   useEffect(() => {
     if (!safeSet(GROUPS_KEY, JSON.stringify(activeGroups))) setStorageOk(false)
+    else setStorageOk(true)
   }, [activeGroups])
 
   // Sinkronkan warna browser dengan tema agar address bar tidak tetap terang.
@@ -172,6 +182,20 @@ function App() {
     if (view !== 'quiz' || selected === null) return
     nextButtonRef.current?.focus({ preventScroll: true })
   }, [view, selected])
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('theme-dark', theme === 'dark')
+  }, [theme])
+
+  useEffect(() => {
+    pageTitleRef.current?.focus({ preventScroll: true })
+  }, [view])
+
+  useEffect(() => {
+    if (view !== 'quiz' || !question || selected !== null) return
+    if (isMixedDirection) document.querySelector('.choices button')?.focus({ preventScroll: true })
+    else inputRef.current?.focus({ preventScroll: true })
+  }, [view, question?.id, isMixedDirection, selected])
 
   const chooseQuestion = (nextReviewIds = reviewIds, excludeId = null) => {
     if (pool.length === 0) {
@@ -278,7 +302,9 @@ function App() {
     [reviewIds],
   )
 
-  const isMixedDirection = question?.direction === 'romaji->kana'
+  const questionNumber = roundTotal + (selected === null ? 1 : 0)
+
+  const questionNumberText = String(questionNumber).padStart(2, '0')
 
   return (
     <main className={`app-shell ${theme === 'dark' ? 'theme-dark' : ''}`}>
@@ -289,7 +315,7 @@ function App() {
           <span><strong>hirakana</strong><small>kertas latihan kana</small></span>
         </button>
         <div className="header-tools">
-          <button className="theme-toggle" onClick={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')} aria-label={theme === 'dark' ? 'Aktifkan mode terang' : 'Aktifkan dark mode'} title={theme === 'dark' ? 'Mode terang' : 'Dark mode'}>
+          <button className="theme-toggle" type="button" aria-pressed={theme === 'dark'} onClick={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')} aria-label={theme === 'dark' ? 'Aktifkan mode terang' : 'Aktifkan dark mode'} title={theme === 'dark' ? 'Mode terang' : 'Dark mode'}>
             <span aria-hidden="true">{theme === 'dark' ? '☼' : '☾'}</span>
           </button>
           <div className={`top-note ${storageOk ? '' : 'is-off'}`} role="status"><span className="dot" /> {storageOk ? 'sesi lokal tersimpan' : 'penyimpanan tidak aktif'}</div>
@@ -300,9 +326,9 @@ function App() {
         <section className="dashboard page-enter">
           <div className="intro-copy">
             <p className="eyebrow">studio hafalan / 001</p>
-            <h1>Belajar kana,<br /><em>pelan-pelan jadi bisa.</em></h1>
+            <h1 ref={pageTitleRef} tabIndex={-1}>Belajar kana,<br /><em>pelan-pelan jadi bisa.</em></h1>
             <p className="intro-text">Sesi kecil, pengulangan cerdas, dan sedikit rasa seperti membuka buku catatan Jepang baru.</p>
-            <button className="primary-action" onClick={() => startGame()}>Mulai latihan <span>→</span></button>
+            <button className="primary-action" type="button" onClick={() => startGame()}>Mulai latihan <span aria-hidden="true">→</span></button>
           </div>
 
           <aside className="stats-note">
@@ -310,15 +336,15 @@ function App() {
             <p className="note-label">catatan hari ini</p>
             <div className="stat-big">{totalProgress}<span>%</span></div>
             <p className="stat-caption">dari semua kana sudah mulai menempel</p>
-            <div className="progress-line"><span style={{ width: `${Math.max(MIN_PROGRESS_WIDTH, totalProgress)}%` }} /></div>
+            <div className="progress-line" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={totalProgress} aria-label="Kemajuan belajar"><span style={{ width: `${Math.max(MIN_PROGRESS_WIDTH, totalProgress)}%` }} /></div>
             <div className="stat-row"><span>Karakter dikuasai</span><strong>{masteredCount} / {kanaCards.length}</strong></div>
             <div className="stat-row"><span>Sudah tersentuh</span><strong>{touchedCount} kartu</strong></div>
             <div className="stat-row"><span>Streak terbaik</span><strong>{bestStreak} benar</strong></div>
           </aside>
 
           <div className="mode-section">
-            <div className="section-heading"><span>01</span><div><h2>Pilih meja latihan</h2><p>Mulai dari aksara yang ingin kamu kenal hari ini.</p></div></div>
-            <div className="mode-grid">
+            <div className="section-heading"><span>01</span><div><h2 id="mode-heading">Pilih meja latihan</h2><p>Mulai dari aksara yang ingin kamu kenal hari ini.</p></div></div>
+            <div className="mode-grid" role="group" aria-labelledby="mode-heading">
               {modes.map((item) => (
                 <button className={`mode-card ${mode === item.id ? 'active' : ''}`} key={item.id} type="button" aria-pressed={mode === item.id} onClick={() => handleModeChange(item.id)}>
                   <span className="mode-check" aria-hidden="true">{mode === item.id ? '✓' : ''}</span>
@@ -330,8 +356,8 @@ function App() {
           </div>
 
           <div className="group-section">
-            <div className="section-heading"><span>02</span><div><h2>Aksara yang dilatih</h2><p>Nyalakan grup huruf yang ingin kamu hafalkan hari ini.</p></div></div>
-            <div className="group-grid">
+            <div className="section-heading"><span>02</span><div><h2 id="group-heading">Aksara yang dilatih</h2><p>Nyalakan grup huruf yang ingin kamu hafalkan hari ini.</p></div></div>
+            <div className="group-grid" role="group" aria-labelledby="group-heading">
               {groups.map((group) => {
                 const active = activeGroups.includes(group.id)
                 return (
@@ -345,35 +371,35 @@ function App() {
             </div>
           </div>
 
-          <div className="tip-strip"><span className="tip-icon">✦</span><p><strong>Ritme kecil lebih kuat.</strong> Lima menit setiap hari lebih berarti daripada maraton sekali seminggu.</p><span className="tip-kana">毎日</span></div>
+          <div className="tip-strip"><span className="tip-icon" aria-hidden="true">✦</span><p><strong>Ritme kecil lebih kuat.</strong> Lima menit setiap hari lebih berarti daripada maraton sekali seminggu.</p><span className="tip-kana" lang="ja" aria-hidden="true">毎日</span></div>
         </section>
       )}
 
       {view === 'quiz' && (
         <section className="quiz-page page-enter">
           <div className="quiz-meta">
-            <button className="back-button" onClick={() => setView(roundTotal > 0 ? 'summary' : 'dashboard')}>← kembali ke meja</button>
+            <button className="back-button" type="button" onClick={() => setView(roundTotal > 0 ? 'summary' : 'dashboard')}>← kembali ke meja</button>
             <span>latihan {modes.find((item) => item.id === mode)?.label ?? mode}</span>
-            <button className="back-button end-session" onClick={() => setView('summary')}>selesaikan sesi</button>
-            <span className="score-pill">{roundScore} / {roundTotal}</span>
+            <button className="back-button end-session" type="button" onClick={() => setView('summary')}>selesaikan sesi</button>
+            <span className="score-pill" aria-label={`Skor ${roundScore} dari ${roundTotal}`}>{roundScore} / {roundTotal}</span>
           </div>
           {question === null ? (
             <div className="empty-quiz">
               <p>Belum ada kartu untuk latihan ini.</p>
-              <button className="primary-action" onClick={() => setView('dashboard')}>kembali ke meja</button>
+              <button className="primary-action" type="button" onClick={() => setView('dashboard')}>kembali ke meja</button>
             </div>
           ) : (
           <div className="quiz-layout">
             <div className="quiz-main">
               <p className="sr-only" aria-live="polite">
-                {`Soal ${roundTotal + 1}. ${isMixedDirection
-                  ? `Tulis kana untuk bacaan ${question.romaji}.`
+                {`Soal ${questionNumber}. ${isMixedDirection
+                  ? `Pilih aksara yang tepat untuk bacaan ${question.romaji}.`
                   : `Kana ${question.kana}, ${question.script}.`}`}
               </p>
               <div className="question-header">
                 <div>
-                  <p className="eyebrow">lembar latihan / {String(roundTotal + 1).padStart(2, '0')}</p>
-                  <h1>{isMixedDirection ? `Tulis dalam ${question.script}...` : 'Huruf ini dibaca...'}</h1>
+                  <p className="eyebrow">lembar latihan / {questionNumberText}</p>
+                  <h1 ref={pageTitleRef} tabIndex={-1}>{isMixedDirection ? `Tulis dalam ${question.script}...` : 'Huruf ini dibaca...'}</h1>
                 </div>
                 <div className="streak-stamp"><span>STREAK</span><strong>{streak}</strong></div>
               </div>
@@ -383,18 +409,18 @@ function App() {
                 {!isMixedDirection && <div className="kana-script">{question.script}</div>}
                 <div className="sheet-rule rule-one" /><div className="sheet-rule rule-two" />
               </div>
-              <div className="answer-area">
-                <p className="answer-label">{isMixedDirection ? 'pilih aksara yang tepat' : 'pilih suara yang tepat'}</p>
-                <div className="choices">
+              <div>
+                <p className="answer-label" id="answer-label">{isMixedDirection ? 'pilih aksara yang tepat' : 'pilih suara yang tepat'}</p>
+                <div className="choices" role="group" aria-labelledby="answer-label">
                   {options.map((option, index) => {
-                    const isChosen = selected === option
+                    const isChosen = selected !== null && normalizeAnswer(selected) === normalizeAnswer(option)
                     const isReveal = answerState === 'wrong' && option === expectedAnswer
                     return (
                       <button
                         key={option}
                         type="button"
                         disabled={selected !== null}
-                        className={`choice ${isMixedDirection ? 'choice-kana' : ''} ${isChosen ? 'chosen' : ''} ${isChosen && answerState === 'wrong' ? 'wrong-pick' : ''} ${isReveal ? 'reveal' : ''}`}
+                        className={`choice ${isMixedDirection ? 'choice-kana' : ''} ${isChosen ? 'chosen' : ''} ${isChosen && answerState === 'wrong' ? 'wrong-pick' : ''} ${isChosen && answerState === 'correct' ? 'correct' : ''} ${isReveal ? 'reveal' : ''}`}
                         onClick={() => finishAnswer(option)}
                       >
                         <span aria-hidden="true">{String.fromCharCode(65 + index)}</span>
@@ -404,17 +430,17 @@ function App() {
                   })}
                 </div>
                 {!isMixedDirection && (
-                  <form className="typed-form" onSubmit={handleTypedSubmit}><label htmlFor="romaji-answer">atau tulis romaji</label><div><input id="romaji-answer" ref={inputRef} value={typedAnswer} onChange={(event) => setTypedAnswer(event.target.value)} placeholder="ketik di sini..." disabled={selected !== null} autoComplete="off" autoCapitalize="off" autoCorrect="off" spellCheck={false} inputMode="text" maxLength={12} /><button type="submit" disabled={selected !== null || !typedAnswer.trim()}>cek</button></div></form>
+                  <form className="typed-form" onSubmit={handleTypedSubmit}><label htmlFor="romaji-answer">atau tulis romaji</label><div><input id="romaji-answer" name="romaji" ref={inputRef} value={typedAnswer} onChange={(event) => setTypedAnswer(event.target.value)} placeholder="ketik di sini..." disabled={selected !== null} autoComplete="off" autoCapitalize="off" autoCorrect="off" spellCheck={false} inputMode="text" maxLength={12} /><button type="submit" disabled={selected !== null || !typedAnswer.trim()}>cek</button></div></form>
                 )}
               </div>
               {selected !== null && (
                 <div className={`feedback feedback-${answerState}`} role="status">
-                  <span>{answerState === 'correct' ? '✓' : '!'}</span>
+                  <span aria-hidden="true">{answerState === 'correct' ? '✓' : '!'}</span>
                   <div>
-                    <strong>{answerState === 'correct' ? 'Bagus, masuk satu lagi.' : `Belum tepat. Jawabannya ${expectedAnswer}.`}</strong>
+                    <strong>{answerState === 'correct' ? 'Bagus, masuk satu lagi.' : (<>Belum tepat. Jawabannya <span lang="en">{expectedAnswer}</span>.</>)}</strong>
                     <small>{answerState === 'correct' ? `Streak kamu sekarang ${streak}.` : 'Kita simpan untuk diulang sebentar lagi.'}</small>
                   </div>
-                  <button ref={nextButtonRef} onClick={nextQuestion}>lanjut →</button>
+                  <button ref={nextButtonRef} type="button" onClick={nextQuestion}>lanjut <span aria-hidden="true">→</span></button>
                 </div>
               )}
             </div>
@@ -423,12 +449,12 @@ function App() {
                 <p className="note-label">kartu ini</p>
                 <div className="mini-kana" lang={isMixedDirection ? 'en' : 'ja'}>{isMixedDirection ? question.romaji : question.kana}</div>
                 <p>{currentMastery === 0 ? 'Belum tersentuh' : `${currentMastery} / ${MASTERY_CAP} tingkat ingatan`}</p>
-                <div className="dots">{Array.from({ length: MASTERY_CAP }, (_, i) => i + 1).map((dot) => <i className={dot <= currentMastery ? 'filled' : ''} key={dot} />)}</div>
+                <div className="dots" aria-hidden="true">{Array.from({ length: MASTERY_CAP }, (_, i) => i + 1).map((dot) => <i className={dot <= currentMastery ? 'filled' : ''} key={dot} />)}</div>
               </div>
               <div className="session-list">
                 <p className="note-label">sesi ini</p>
-                <div><span className="session-icon">◎</span><p><strong>{roundScore}</strong><small>jawaban benar</small></p></div>
-                <div><span className="session-icon">↗</span><p><strong>{reviewIds.length}</strong><small>perlu diulang</small></p></div>
+                <div><span className="session-icon" aria-hidden="true">◎</span><p><strong>{roundScore}</strong><small>jawaban benar</small></p></div>
+                <div><span className="session-icon" aria-hidden="true">↗</span><p><strong>{reviewIds.length}</strong><small>perlu diulang</small></p></div>
               </div>
             </aside>
           </div>
@@ -439,14 +465,14 @@ function App() {
       {view === 'summary' && (
         <section className="summary-page page-enter">
           <p className="eyebrow">ringkasan sesi</p>
-          <h1>Sesi selesai,<br /><em>sampai jumpa lagi.</em></h1>
+          <h1 ref={pageTitleRef} tabIndex={-1}>Sesi selesai,<br /><em>sampai jumpa lagi.</em></h1>
           <div className="summary-grid">
             <aside className="stats-note">
               <div className="tape" />
               <p className="note-label">hasil latihan</p>
               <div className="stat-big">{accuracy}<span>%</span></div>
               <p className="stat-caption">{roundTotal > 0 ? `akurasi dari ${roundTotal} soal yang dikerjakan` : 'belum ada soal yang dikerjakan'}</p>
-              <div className="progress-line"><span style={{ width: `${roundTotal > 0 ? Math.max(MIN_PROGRESS_WIDTH, accuracy) : 0}%` }} /></div>
+              <div className="progress-line" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={accuracy} aria-label="Kemajuan sesi"><span style={{ width: `${roundTotal > 0 ? Math.max(MIN_PROGRESS_WIDTH, accuracy) : 0}%` }} /></div>
               <div className="stat-row"><span>Jawaban benar</span><strong>{roundScore} / {roundTotal}</strong></div>
               <div className="stat-row"><span>Streak terbaik</span><strong>{bestStreak} benar</strong></div>
               <div className="stat-row"><span>Perlu diulang</span><strong>{reviewIds.length} kartu</strong></div>
@@ -466,8 +492,8 @@ function App() {
                 </div>
               )}
               <div className="summary-actions">
-                <button className="primary-action" onClick={() => startGame(reviewIds)}>Mulai sesi baru</button>
-                <button className="back-button" onClick={() => setView('dashboard')}>kembali ke meja</button>
+                <button className="primary-action" type="button" onClick={() => startGame(reviewIds)}>Mulai sesi baru</button>
+                <button className="back-button" type="button" onClick={() => setView('dashboard')}>kembali ke meja</button>
               </div>
             </div>
           </div>

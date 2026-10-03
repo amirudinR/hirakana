@@ -48,6 +48,29 @@ h1 em { color: var(--red); font-style: normal; }
 @media (max-width: 760px) { .app-shell { padding: 0 max(22px, env(safe-area-inset-right)) 0 max(22px, env(safe-area-inset-left)); }.topbar { height: 82px; }.top-note:not(.is-off) { display: none; }.dashboard { grid-template-columns: 1fr; gap: 46px; padding: 58px 0 40px; }.mode-grid { grid-template-columns: 1fr; }.mode-card { min-height: 105px; }.tip-strip { align-items: flex-start; }.tip-kana { display: none; }.footer { gap: 16px; flex-direction: column; }.quiz-page { padding-top: 30px; }.quiz-layout { grid-template-columns: 1fr; gap: 38px; margin-top: 35px; }.quiz-side { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }.question-header h1 { font-size: 33px; }.kana-sheet { height: 265px; }.kana-character { font-size: 125px; }.choices { grid-template-columns: repeat(2, 1fr); } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; animation-delay: 0s !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; transition-delay: 0s !important; } }
 
+/* --- Typing Game --- */
+.typing-page { padding-top: 0; max-width: none; margin: 0; width: 100vw; position: relative; left: 50%; right: 50%; margin-left: -50vw; margin-right: -50vw; overflow: hidden; background: var(--canvas); }
+.typing-banner { background: #555e69; padding: 40px 0 20px; overflow: hidden; width: 100%; display: flex; justify-content: center; position: relative; }
+.typing-track { display: flex; align-items: flex-end; gap: 8px; transition: transform 0.15s ease-out; white-space: nowrap; }
+.typing-char { position: relative; width: 56px; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; }
+.typing-char.past.correct .typing-kana { color: #34d399; }
+.typing-char.past.wrong .typing-kana { color: #ef4444; }
+.typing-char.current .typing-kana { color: #ffffff; }
+.typing-char:not(.past):not(.current) .typing-kana { color: rgba(255, 255, 255, 0.2); }
+.typing-kana { font: 64px/1 var(--font-kana); transition: color 0.15s; }
+.typing-romaji { position: absolute; top: -30px; font: 600 20px var(--font-display); }
+.typing-romaji.correct { color: #34d399; }
+.typing-romaji.wrong { color: #ef4444; }
+.typing-input-area { background: #717a86; padding: 18px 0 18px; display: flex; flex-direction: column; align-items: center; justify-content: center; position: relative; }
+.typing-input { background: rgba(0, 0, 0, 0.08); border: 1px solid rgba(255,255,255,0.05); border-radius: 6px; color: #fff; font: 24px var(--font-mono); padding: 8px 12px; text-align: center; width: 200px; outline: none; transition: background 0.15s, border-color 0.15s; }
+.typing-input:focus { background: rgba(0, 0, 0, 0.12); border-color: rgba(255,255,255,0.15); }
+.typing-actions { display: flex; gap: 30px; align-items: center; justify-content: center; padding: 40px 0 60px; background: transparent; }
+
+.typing-actions .text-link { color: var(--red); text-decoration: none; font-size: 16px; margin-top: 0; padding: 0; border: none; }
+.typing-actions .primary-action { background: var(--red); color: var(--on-accent); margin-top: 0; padding: 12px 24px; border-radius: 4px; font-size: 16px; font-weight: 500; border: none; }
+.typing-actions .primary-action:hover { opacity: 0.9; transform: none; }
+
+
 /* --- Tambahan: arah romaji->kana, sesi, dan ringkasan --- */
 .kana-character.prompt-romaji { font-family: var(--font-display); font-weight: 500; font-size: clamp(56px, 14vw, 110px); letter-spacing: -.02em; }
 .choice.choice-kana { font-family: var(--font-kana); font-size: 27px; font-weight: 500; padding-top: 24px; }

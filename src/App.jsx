@@ -19,6 +19,7 @@ const modes = [
 const practiceStyles = [
   { id: 'standard', label: 'Standar', note: 'soal biasa' },
   { id: 'listening', label: 'Dengarkan', note: 'jawab dari suara' },
+  { id: 'typing', label: 'Mengetik', note: 'latihan kecepatan' },
 ]
 
 const freshMastery = () => Object.fromEntries(kanaCards.map((card) => [card.id, 0]))
@@ -139,6 +140,10 @@ function App() {
   const [audioSupported] = useState(speechSupported())
   const [showMnemonic, setShowMnemonic] = useState(true)
   const [showTableMnemonics, setShowTableMnemonics] = useState(true)
+  const [typingCards, setTypingCards] = useState([])
+  const [typingIndex, setTypingIndex] = useState(0)
+  const [typingResults, setTypingResults] = useState([])
+
   const inputRef = useRef(null)
   const nextButtonRef = useRef(null)
   const pageTitleRef = useRef(null)
@@ -217,6 +222,12 @@ function App() {
   }, [view])
 
   useEffect(() => {
+    if (view === 'typing-quiz') {
+      inputRef.current?.focus({ preventScroll: true })
+    }
+  }, [view, typingIndex])
+
+  useEffect(() => {
     if (view !== 'quiz' || !question || selected !== null) return
     if (isListening) playButtonRef.current?.focus({ preventScroll: true })
     else if (picksKana) document.querySelector('.choices button')?.focus({ preventScroll: true })
@@ -251,13 +262,31 @@ function App() {
   }
 
   const startGame = (seed = []) => {
-    setView('quiz')
-    setShowMnemonic(true)
-    setStreak(0)
-    setRoundScore(0)
-    setRoundTotal(0)
-    setReviewIds(seed)
-    chooseQuestion(seed, null)
+    if (practiceStyle === 'typing') {
+      setView('typing-quiz')
+      setStreak(0)
+      setRoundScore(0)
+      setRoundTotal(0)
+      setReviewIds([])
+      const count = 30
+      const newCards = []
+      const source = pool.length > 0 ? pool : kanaCards
+      for (let i = 0; i < count; i++) {
+        newCards.push(source[Math.floor(Math.random() * source.length)])
+      }
+      setTypingCards(newCards)
+      setTypingIndex(0)
+      setTypingResults([])
+      setTypedAnswer('')
+    } else {
+      setView('quiz')
+      setShowMnemonic(true)
+      setStreak(0)
+      setRoundScore(0)
+      setRoundTotal(0)
+      setReviewIds(seed)
+      chooseQuestion(seed, null)
+    }
   }
 
   const handleModeChange = (nextMode) => {
@@ -346,6 +375,56 @@ function App() {
   const handleTypedSubmit = (event) => {
     event.preventDefault()
     if (typedAnswer.trim()) finishAnswer(typedAnswer)
+  }
+
+  const processTypingAnswer = (val) => {
+    const ans = normalizeAnswer(val)
+    if (!ans) {
+      setTypedAnswer('')
+      return
+    }
+    const currentCard = typingCards[typingIndex]
+    const expected = normalizeAnswer(currentCard.romaji)
+    const isCorrect = ans === expected
+    
+    const newResults = [...typingResults, { answer: ans, correct: isCorrect }]
+    setTypingResults(newResults)
+    setTypedAnswer('')
+    
+    if (isCorrect) {
+      setRoundScore((s) => s + 1)
+      const nextStreak = streak + 1
+      setStreak(nextStreak)
+      setBestStreak((best) => Math.max(best, nextStreak))
+      setMastery((current) => ({ ...current, [currentCard.id]: Math.min(MASTERY_CAP, (current[currentCard.id] ?? 0) + 1) }))
+    } else {
+      setStreak(0)
+      setMastery((current) => ({ ...current, [currentCard.id]: Math.max(0, (current[currentCard.id] ?? 0) - 1) }))
+      setReviewIds((ids) => [...new Set([...ids, currentCard.id])])
+    }
+    setRoundTotal((t) => t + 1)
+    
+    if (typingIndex + 1 >= typingCards.length) {
+      setView('summary')
+    } else {
+      setTypingIndex(typingIndex + 1)
+    }
+  }
+
+  const handleTypingChange = (e) => {
+    const val = e.target.value
+    if (val.endsWith(' ')) {
+      processTypingAnswer(val)
+    } else {
+      setTypedAnswer(val)
+    }
+  }
+
+  const handleTypingKeyDown = (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      processTypingAnswer(typedAnswer)
+    }
   }
 
   const nextQuestion = () => chooseQuestion(reviewIds, question?.id)
@@ -545,6 +624,52 @@ function App() {
             </aside>
           </div>
           )}
+        </section>
+      )}
+
+      {view === 'typing-quiz' && (
+        <section className="typing-page page-enter">
+          <div className="typing-banner">
+            <div className="typing-track" style={{ transform: `translateX(calc(50% - ${typingIndex * 64}px - 32px))` }}>
+              {typingCards.map((card, i) => {
+                const isPast = i < typingIndex
+                const isCurrent = i === typingIndex
+                const result = isPast ? typingResults[i] : null
+                
+                return (
+                  <div key={`${card.id}-${i}`} className={`typing-char ${isPast ? 'past' : ''} ${isCurrent ? 'current' : ''} ${isPast && result?.correct ? 'correct' : ''} ${isPast && !result?.correct ? 'wrong' : ''}`}>
+                    {isPast && (
+                      <span className={`typing-romaji ${result?.correct ? 'correct' : 'wrong'}`}>
+                        {result?.correct ? card.romaji : card.romaji}
+                      </span>
+                    )}
+                    <span className="typing-kana" lang="ja">
+                      {card.kana}
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+          <div className="typing-input-area">
+            <input 
+              ref={inputRef}
+              className="typing-input"
+              value={typedAnswer}
+              onChange={handleTypingChange}
+              onKeyDown={handleTypingKeyDown}
+              placeholder=" "
+              autoComplete="off"
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
+              inputMode="text"
+            />
+          </div>
+          <div className="typing-actions">
+            <button className="text-link" type="button" onClick={() => setView('dashboard')}>Pilih kana</button>
+            <button className="primary-action" type="button" onClick={() => startGame()}>Mulai ulang</button>
+          </div>
         </section>
       )}
 

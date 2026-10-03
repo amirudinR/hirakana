@@ -137,6 +137,8 @@ function App() {
   const [practiceStyle, setPracticeStyle] = useState('standard')
   const [audioMessage, setAudioMessage] = useState('')
   const [audioSupported] = useState(speechSupported())
+  const [showMnemonic, setShowMnemonic] = useState(true)
+  const [showTableMnemonics, setShowTableMnemonics] = useState(true)
   const inputRef = useRef(null)
   const nextButtonRef = useRef(null)
   const pageTitleRef = useRef(null)
@@ -222,6 +224,7 @@ function App() {
   }, [view, question?.id, isListening, picksKana, selected])
 
   const chooseQuestion = (nextReviewIds = reviewIds, excludeId = null) => {
+    setShowMnemonic(true)
     if (pool.length === 0) {
       setQuestion(null)
       setOptions([])
@@ -249,6 +252,7 @@ function App() {
 
   const startGame = (seed = []) => {
     setView('quiz')
+    setShowMnemonic(true)
     setStreak(0)
     setRoundScore(0)
     setRoundTotal(0)
@@ -270,6 +274,7 @@ function App() {
   const handlePracticeStyleChange = (nextStyle) => {
     if (nextStyle === practiceStyle) return
     setPracticeStyle(nextStyle)
+    setShowMnemonic(true)
     cancelSpeech()
     setQuestion(null)
     setOptions([])
@@ -527,6 +532,10 @@ function App() {
                 <div className="mini-kana" lang={isListening ? 'ja' : isMixedDirection ? 'en' : 'ja'}>{isListening ? (selected === null ? '♪' : question.kana) : isMixedDirection ? question.romaji : question.kana}</div>
                 <p>{currentMastery === 0 ? 'Belum tersentuh' : `${currentMastery} / ${MASTERY_CAP} tingkat ingatan`}</p>
                 <div className="dots" aria-hidden="true">{Array.from({ length: MASTERY_CAP }, (_, i) => i + 1).map((dot) => <i className={dot <= currentMastery ? 'filled' : ''} key={dot} />)}</div>
+                <button className="mnemonic-toggle" type="button" onClick={() => setShowMnemonic((current) => !current)}>
+                  {showMnemonic ? 'Sembunyikan' : 'Tampilkan'} mnemonik
+                </button>
+                {showMnemonic && <p className="mnemonic-note"><span>mnemonik</span> {question.mnemonic}</p>}
               </div>
               <div className="session-list">
                 <p className="note-label">sesi ini</p>
@@ -585,7 +594,12 @@ function App() {
             <span className="score-pill" aria-label={`Sudah tersentuh ${touchedCount} kartu`}>{touchedCount} kartu</span>
           </div>
           <h1 ref={pageTitleRef} tabIndex={-1}>Tabel lengkap kana</h1>
-          <p className="intro-text">Hiragana dan katakana berdampingan. Klik sel untuk mendengar bunyinya.</p>
+          <div className="table-toolbar">
+            <p className="intro-text">Hiragana dan katakana berdampingan. Klik sel untuk mendengar bunyinya.</p>
+            <button className="mnemonic-toggle table-toggle" type="button" onClick={() => setShowTableMnemonics((current) => !current)}>
+              {showTableMnemonics ? 'Sembunyikan' : 'Tampilkan'} mnemonik
+            </button>
+          </div>
           {audioMessage && <p className="audio-status" role="status">{audioMessage}</p>}
           <div className="table-grid">
             {groups.map((group) => (
@@ -600,7 +614,8 @@ function App() {
                         {kanaCards.filter((card) => card.script === script && card.group === group.id).map((card) => (
                           <button className="kana-cell" key={card.id} type="button" aria-label={`Dengarkan ${card.kana}, baca ${card.romaji}`} onClick={() => playKana(card.kana)}>
                             <span className="kana-cell-char" lang="ja">{card.kana}</span>
-                            <small lang="en">{card.romaji}</small>
+                            <small className="kana-cell-romaji" lang="en">{card.romaji}</small>
+                            {showTableMnemonics && <small className="kana-cell-mnemonic">{card.mnemonic}</small>}
                           </button>
                         ))}
                       </div>

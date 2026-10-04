@@ -6,6 +6,8 @@ const STORAGE_KEY = 'hirakana-mastery-v1'
 const THEME_KEY = 'hirakana-theme-v1'
 const BEST_STREAK_KEY = 'hirakana-beststreak-v1'
 const GROUPS_KEY = 'hirakana-groups-v1'
+const FAILURES_KEY = 'hirakana-failures-v1'
+const EXAM_LENGTH = 20
 const MASTERY_CAP = 5
 const MASTERED_THRESHOLD = 3
 const OPTION_COUNT = 4
@@ -19,7 +21,8 @@ const modes = [
 const practiceStyles = [
   { id: 'standard', label: 'Standar', note: 'soal biasa' },
   { id: 'listening', label: 'Dengarkan', note: 'jawab dari suara' },
-  { id: 'typing', label: 'Mengetik', note: 'latihan kecepatan' },
+  { id: 'typing', label: 'Mengetik', note: 'ketik romaji, ulangi sampai benar' },
+  { id: 'exam', label: 'Ujian', note: 'kuis kartu yang sering gagal' },
 ]
 
 const freshMastery = () => Object.fromEntries(kanaCards.map((card) => [card.id, 0]))
@@ -63,6 +66,23 @@ function readBestStreak() {
     return Number.isSafeInteger(value) ? value : 0
   } catch {
     return 0
+  }
+}
+
+function readFailures() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(FAILURES_KEY))
+    if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return {}
+    const result = {}
+    for (const [id, value] of Object.entries(saved)) {
+      if (id === '__proto__' || id === 'constructor' || id === 'prototype') continue
+      if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+        result[id] = Math.min(999, Math.round(value))
+      }
+    }
+    return result
+  } catch {
+    return {}
   }
 }
 
@@ -140,9 +160,14 @@ function App() {
   const [audioSupported] = useState(speechSupported())
   const [showMnemonic, setShowMnemonic] = useState(true)
   const [showTableMnemonics, setShowTableMnemonics] = useState(true)
-  const [typingCards, setTypingCards] = useState([])
-  const [typingIndex, setTypingIndex] = useState(0)
-  const [typingResults, setTypingResults] = useState([])
+  const [failures, setFailures] = useState(readFailures)
+  const [examCards, setExamCards] = useState([])
+  const [examIndex, setExamIndex] = useState(0)
+  const [examPicks, setExamPicks] = useState([])
+  // Antrean soal: kartu saat ini ada di index 0. Salah -> kartu dikembalikan
+  // ke antrean beberapa posisi lagi supaya diulang sampai benar.
+  const [typingQueue, setTypingQueue] = useState([])
+  const [typingHistory, setTypingHistory] = useState([])
 
   const inputRef = useRef(null)
   const nextButtonRef = useRef(null)
@@ -169,10 +194,29 @@ function App() {
   )
   const totalProgress = Math.round((masteredCount / kanaCards.length) * 100)
 
+  // Kartu yang paling sering gagal, diurutkan dari jumlah kesalahan terbanyak.
+  const troubleCards = useMemo(
+    () => Object.entries(failures)
+      .map(([id, count]) => ({ card: kanaCards.find((item) => item.id === id), count }))
+      .filter((item) => item.card)
+      .sort((a, b) => b.count - a.count || a.card.romaji.localeCompare(b.card.romaji))
+      .slice(0, 8),
+    [failures],
+  )
+  const troubleTotal = useMemo(
+    () => Object.values(failures).reduce((sum, count) => sum + count, 0),
+    [failures],
+  )
+
   useEffect(() => {
     if (!safeSet(STORAGE_KEY, JSON.stringify(mastery))) setStorageOk(false)
     else setStorageOk(true)
   }, [mastery])
+
+  useEffect(() => {
+    if (!safeSet(FAILURES_KEY, JSON.stringify(failures))) setStorageOk(false)
+    else setStorageOk(true)
+  }, [failures])
 
   useEffect(() => {
     if (!safeSet(THEME_KEY, theme)) setStorageOk(false)
@@ -213,6 +257,42 @@ function App() {
     nextButtonRef.current?.focus({ preventScroll: true })
   }, [view, selected])
 
+  // Terapkan hasil ujian ke mastery & riwayat hanya sekali per sesi ujian.
+  const examAppliedRef = useRef(false)
+  useEffect(() => {
+    if (view !== 'exam-result') {
+      if (view !== 'exam') examAppliedRef.current = false
+      return
+    }
+    if (examAppliedRef.current || examPicks.length === 0) return
+    examAppliedRef.current = true
+    setMastery((current) => {
+      const next = { ...current }
+      for (const pick of examPicks) {
+        const id = pick.card.id
+        next[id] = pick.correct
+          ? Math.min(MASTERY_CAP, (next[id] ?? 0) + 1)
+          : Math.max(0, (next[id] ?? 0) - 1)
+      }
+      return next
+    })
+    setFailures((current) => {
+      const next = { ...current }
+      for (const pick of examPicks) {
+        const id = pick.card.id
+        if (pick.correct) {
+          if (next[id] !== undefined) {
+            if (next[id] <= 1) delete next[id]
+            else next[id] -= 1
+          }
+        } else {
+          next[id] = (next[id] ?? 0) + 1
+        }
+      }
+      return next
+    })
+  }, [view, examPicks])
+
   useEffect(() => {
     document.documentElement.classList.toggle('theme-dark', theme === 'dark')
   }, [theme])
@@ -225,7 +305,7 @@ function App() {
     if (view === 'typing-quiz') {
       inputRef.current?.focus({ preventScroll: true })
     }
-  }, [view, typingIndex])
+  }, [view, typingHistory.length])
 
   useEffect(() => {
     if (view !== 'quiz' || !question || selected !== null) return
@@ -261,7 +341,48 @@ function App() {
     setTypedAnswer('')
   }
 
+  // Ujian: kuis terstruktur yang disusun dari kartu yang paling sering gagal.
+  // Tidak ada umpan balik per soal supaya terasa seperti ujian sungguhan.
+  const startExam = () => {
+    const source = pool.length > 0 ? pool : kanaCards
+    const ranked = [...source].sort((a, b) => (failures[b.id] ?? 0) - (failures[a.id] ?? 0))
+    // 60% slot untuk kartu paling sering gagal, sisanya acak supaya cakupan tetap luas.
+    const focusCount = Math.min(ranked.length, Math.ceil(EXAM_LENGTH * 0.6))
+    const focus = ranked.slice(0, focusCount)
+    const picked = []
+    const usedIds = new Set()
+    while (picked.length < EXAM_LENGTH) {
+      const fromFocus = focus.length > 0 && Math.random() < 0.6
+      const bag = fromFocus ? focus : source
+      const candidate = bag[Math.floor(Math.random() * bag.length)]
+      if (!candidate) break
+      if (usedIds.has(candidate.id) && picked.length < source.length) continue
+      usedIds.add(candidate.id)
+      picked.push(candidate)
+    }
+    setExamCards(shuffle(picked.length > 0 ? picked : source.slice(0, EXAM_LENGTH)))
+    setExamIndex(0)
+    setExamPicks([])
+    setStreak(0)
+    setRoundScore(0)
+    setRoundTotal(0)
+    setReviewIds([])
+    setView('exam')
+  }
+
+  const answerExam = (answer) => {
+    const card = examCards[examIndex]
+    if (!card || examPicks.length !== examIndex) return
+    const isCorrect = normalizeAnswer(answer) === normalizeAnswer(card.romaji)
+    setExamPicks((items) => [...items, { card, answer, correct: isCorrect }])
+    if (examIndex + 1 >= examCards.length) setView('exam-result')
+  }
+
   const startGame = (seed = []) => {
+    if (practiceStyle === 'exam') {
+      startExam()
+      return
+    }
     if (practiceStyle === 'typing') {
       setView('typing-quiz')
       setStreak(0)
@@ -269,14 +390,13 @@ function App() {
       setRoundTotal(0)
       setReviewIds([])
       const count = 30
-      const newCards = []
       const source = pool.length > 0 ? pool : kanaCards
+      const newCards = []
       for (let i = 0; i < count; i++) {
         newCards.push(source[Math.floor(Math.random() * source.length)])
       }
-      setTypingCards(newCards)
-      setTypingIndex(0)
-      setTypingResults([])
+      setTypingQueue(newCards)
+      setTypingHistory([])
       setTypedAnswer('')
     } else {
       setView('quiz')
@@ -364,10 +484,18 @@ function App() {
       setBestStreak((best) => Math.max(best, nextStreak))
       setMastery((current) => ({ ...current, [question.id]: Math.min(MASTERY_CAP, (current[question.id] ?? 0) + 1) }))
       setReviewIds((ids) => ids.filter((id) => id !== question.id))
+      setFailures((current) => {
+        if (current[question.id] === undefined) return current
+        const next = { ...current }
+        if (next[question.id] <= 1) delete next[question.id]
+        else next[question.id] -= 1
+        return next
+      })
     } else {
       setStreak(0)
       setMastery((current) => ({ ...current, [question.id]: Math.max(0, (current[question.id] ?? 0) - 1) }))
       setReviewIds((ids) => [...new Set([...ids, question.id])])
+      setFailures((current) => ({ ...current, [question.id]: (current[question.id] ?? 0) + 1 }))
     }
     setTypedAnswer('')
   }
@@ -379,35 +507,48 @@ function App() {
 
   const processTypingAnswer = (val) => {
     const ans = normalizeAnswer(val)
-    if (!ans) {
+    const currentCard = typingQueue[0]
+    if (!currentCard || !ans) {
       setTypedAnswer('')
       return
     }
-    const currentCard = typingCards[typingIndex]
-    const expected = normalizeAnswer(currentCard.romaji)
-    const isCorrect = ans === expected
-    
-    const newResults = [...typingResults, { answer: ans, correct: isCorrect }]
-    setTypingResults(newResults)
+    const isCorrect = ans === normalizeAnswer(currentCard.romaji)
     setTypedAnswer('')
-    
+    setTypingHistory((items) => [...items, { card: currentCard, answer: ans, correct: isCorrect }])
+    setRoundTotal((total) => total + 1)
+
     if (isCorrect) {
       setRoundScore((s) => s + 1)
       const nextStreak = streak + 1
       setStreak(nextStreak)
       setBestStreak((best) => Math.max(best, nextStreak))
       setMastery((current) => ({ ...current, [currentCard.id]: Math.min(MASTERY_CAP, (current[currentCard.id] ?? 0) + 1) }))
+      setFailures((current) => {
+        if (current[currentCard.id] === undefined) return current
+        const next = { ...current }
+        if (next[currentCard.id] <= 1) delete next[currentCard.id]
+        else next[currentCard.id] -= 1
+        return next
+      })
+      setReviewIds((ids) => ids.filter((id) => id !== currentCard.id))
+      // Benar: kartu keluar dari antrean, lanjut ke soal berikutnya.
+      const rest = typingQueue.slice(1)
+      setTypingQueue(rest)
+      // Antrean habis = semua kartu sudah dijawab benar.
+      if (rest.length === 0) setView('summary')
     } else {
       setStreak(0)
       setMastery((current) => ({ ...current, [currentCard.id]: Math.max(0, (current[currentCard.id] ?? 0) - 1) }))
+      setFailures((current) => ({ ...current, [currentCard.id]: (current[currentCard.id] ?? 0) + 1 }))
       setReviewIds((ids) => [...new Set([...ids, currentCard.id])])
-    }
-    setRoundTotal((t) => t + 1)
-    
-    if (typingIndex + 1 >= typingCards.length) {
-      setView('summary')
-    } else {
-      setTypingIndex(typingIndex + 1)
+      // Salah: kartu dikembalikan 3 posisi lagi supaya sempat diulang. Kalau
+      // antrean habis (soal terakhir), kembalikan ke depan agar tetap diulang.
+      setTypingQueue((queue) => {
+        const rest = queue.slice(1)
+        if (rest.length === 0) return [currentCard]
+        const insertAt = Math.min(3, rest.length)
+        return [...rest.slice(0, insertAt), currentCard, ...rest.slice(insertAt)]
+      })
     }
   }
 
@@ -439,6 +580,15 @@ function App() {
   const questionNumber = roundTotal + (selected === null ? 1 : 0)
 
   const questionNumberText = String(questionNumber).padStart(2, '0')
+
+  const examCard = examCards[examIndex]
+  const examSource = examCard ? pool.filter((item) => item.id !== examCard.id) : []
+  const examOptions = useMemo(() => {
+    if (!examCard) return []
+    return shuffle([examCard.romaji, ...shuffle([...new Set(examSource.map((item) => item.romaji))]).slice(0, OPTION_COUNT - 1)])
+  }, [examCard?.id])
+  const examCorrectCount = examPicks.filter((pick) => pick.correct).length
+  const examScore = examCards.length > 0 ? Math.round((examCorrectCount / examCards.length) * 100) : 0
 
   return (
     <main className={`app-shell ${theme === 'dark' ? 'theme-dark' : ''}`}>
@@ -518,6 +668,35 @@ function App() {
             </div>
           </div>
 
+          <div className="trouble-section">
+            <div className="section-heading"><span>04</span><div><h2 id="trouble-heading">Kartu yang sering gagal</h2><p>Dihitung otomatis dari latihan dan permainan mengetik. Makin sering gagal, makin sering muncul di ujian.</p></div></div>
+            {troubleCards.length === 0 ? (
+              <div className="trouble-empty">
+                <p>Belum ada kartu yang tercatat gagal. Kerjakan latihan dulu, lalu cek lagi di sini.</p>
+              </div>
+            ) : (
+              <>
+                <div className="trouble-grid" role="list" aria-labelledby="trouble-heading">
+                  {troubleCards.map((item) => (
+                    <div className="trouble-card" key={item.card.id} role="listitem">
+                      <div className="trouble-top">
+                        <span className="trouble-kana" lang="ja">{item.card.kana}</span>
+                        <span className="trouble-count">{item.count}x salah</span>
+                      </div>
+                      <div className="trouble-bar"><span style={{ width: `${Math.max(6, (item.count / troubleCards[0].count) * 100)}%` }} /></div>
+                      <small>{item.card.romaji} · {item.card.script} · mastery {mastery[item.card.id] ?? 0}/{MASTERY_CAP}</small>
+                    </div>
+                  ))}
+                </div>
+                <div className="trouble-actions">
+                  <p><strong>{troubleTotal}</strong> total kesalahan tercatat.</p>
+                  <button className="primary-action" type="button" onClick={startExam}>Ujian kartu ini <span aria-hidden="true">›</span></button>
+                  <button className="text-link" type="button" onClick={() => setFailures({})}>bersihkan riwayat</button>
+                </div>
+              </>
+            )}
+          </div>
+
           <div className="tip-strip"><span className="tip-icon" aria-hidden="true">✦</span><p><strong>Ritme kecil lebih kuat.</strong> Lima menit setiap hari lebih berarti daripada maraton sekali seminggu.</p><span className="tip-kana" lang="ja" aria-hidden="true">毎日</span></div>
         </section>
       )}
@@ -526,7 +705,7 @@ function App() {
         <section className="quiz-page page-enter">
           <div className="quiz-meta">
             <button className="back-button" type="button" onClick={() => setView(roundTotal > 0 ? 'summary' : 'dashboard')}>← kembali ke meja</button>
-            <span>latihan {modes.find((item) => item.id === mode)?.label ?? mode} · {practiceStyle === 'listening' ? 'dengar' : 'standar'}</span>
+            <span>latihan {modes.find((item) => item.id === mode)?.label ?? mode} · {practiceStyles.find((item) => item.id === practiceStyle)?.label ?? practiceStyle}</span>
             <button className="back-button end-session" type="button" onClick={() => setView('summary')}>selesaikan sesi</button>
             <span className="score-pill" aria-label={`Skor ${roundScore} dari ${roundTotal}`}>{roundScore} / {roundTotal}</span>
           </div>
@@ -629,32 +808,32 @@ function App() {
 
       {view === 'typing-quiz' && (
         <section className="typing-page page-enter">
+          <p className="sr-only" aria-live="polite">
+            {typingQueue[0]
+              ? `Soal ${typingHistory.length + 1}. Kana ${typingQueue[0].kana}, ketik romaji lalu tekan spasi.`
+              : 'Sesi selesai.'}
+          </p>
           <div className="typing-banner">
-            <div className="typing-track" style={{ transform: `translateX(calc(50% - ${typingIndex * 64}px - 32px))` }}>
-              {typingCards.map((card, i) => {
-                const isPast = i < typingIndex
-                const isCurrent = i === typingIndex
-                const result = isPast ? typingResults[i] : null
-                
-                return (
-                  <div key={`${card.id}-${i}`} className={`typing-char ${isPast ? 'past' : ''} ${isCurrent ? 'current' : ''} ${isPast && result?.correct ? 'correct' : ''} ${isPast && !result?.correct ? 'wrong' : ''}`}>
-                    {isPast && (
-                      <span className={`typing-romaji ${result?.correct ? 'correct' : 'wrong'}`}>
-                        {result?.correct ? card.romaji : card.romaji}
-                      </span>
-                    )}
-                    <span className="typing-kana" lang="ja">
-                      {card.kana}
-                    </span>
-                  </div>
-                )
-              })}
+            <div className="typing-track">
+              {typingHistory.slice(-6).map((item, i) => (
+                <div key={`done-${typingHistory.length - 6 + i}`} className={`typing-char past ${item.correct ? 'correct' : 'wrong'}`}>
+                  <span className={`typing-romaji ${item.correct ? 'correct' : 'wrong'}`}>{item.card.romaji}</span>
+                  <span className="typing-kana" lang="ja">{item.card.kana}</span>
+                </div>
+              ))}
+              {typingQueue.slice(0, 8).map((card, i) => (
+                <div key={`todo-${card.id}-${i}`} className={`typing-char ${i === 0 ? 'current' : 'upcoming'}`}>
+                  <span className="typing-kana" lang="ja">{card.kana}</span>
+                </div>
+              ))}
             </div>
           </div>
           <div className="typing-input-area">
             <input 
               ref={inputRef}
               className="typing-input"
+              id="typing-answer"
+              name="romaji"
               value={typedAnswer}
               onChange={handleTypingChange}
               onKeyDown={handleTypingKeyDown}
@@ -669,6 +848,90 @@ function App() {
           <div className="typing-actions">
             <button className="text-link" type="button" onClick={() => setView('dashboard')}>Pilih kana</button>
             <button className="primary-action" type="button" onClick={() => startGame()}>Mulai ulang</button>
+          </div>
+        </section>
+      )}
+
+      {view === 'exam' && examCards[examIndex] && (
+        <section className="exam-page page-enter">
+          <div className="quiz-meta">
+            <button className="back-button" type="button" onClick={() => setView('dashboard')}>‹ keluar dari ujian</button>
+            <span>ujian kartu sulit · tanpa umpan balik per soal</span>
+            <span className="score-pill" aria-label={`Soal ${examIndex + 1} dari ${examCards.length}`}>{examIndex + 1} / {examCards.length}</span>
+          </div>
+          <div className="exam-progress" role="progressbar" aria-valuemin={0} aria-valuemax={examCards.length} aria-valuenow={examIndex} aria-label="Kemajuan ujian">
+            <span style={{ width: `${(examIndex / examCards.length) * 100}%` }} />
+          </div>
+          <div className="exam-body">
+            <div className="exam-main">
+              <p className="eyebrow">soal ujian / {String(examIndex + 1).padStart(2, '0')}</p>
+              <h1 ref={pageTitleRef} tabIndex={-1}>Huruf ini dibaca...</h1>
+              <div className="kana-sheet exam-sheet">
+                <div className="sheet-corner" lang="ja" aria-hidden="true">試験</div>
+                <div className="kana-character" lang="ja">{examCards[examIndex].kana}</div>
+                <div className="kana-script">{examCards[examIndex].script}</div>
+                <button className="listen-button listen-button-small" type="button" onClick={() => playKana(examCards[examIndex].kana)} disabled={!audioSupported} aria-label="Dengarkan bacaan kana ini">♪ dengarkan</button>
+                <div className="sheet-rule rule-one" /><div className="sheet-rule rule-two" />
+              </div>
+              <p className="answer-label" id="exam-answer-label">pilih romaji yang tepat</p>
+              <div className="choices" role="group" aria-labelledby="exam-answer-label">
+                {examOptions.map((option, index) => (
+                  <button
+                    key={option}
+                    type="button"
+                    className="choice"
+                    onClick={() => {
+                      answerExam(option)
+                      setExamIndex((i) => i + 1)
+                    }}
+                  >
+                    <span aria-hidden="true">{String.fromCharCode(65 + index)}</span>
+                    <span lang="en">{option}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <aside className="exam-side">
+              <div className="mini-note">
+                <p className="note-label">aturan ujian</p>
+                <p className="exam-rule">Tidak ada umpan balik per soal. Jawab semua dulu, hasil dan daftar kartu yang salah baru muncul setelah soal terakhir.</p>
+                <div className="dots" aria-hidden="true">{examCards.map((card, i) => <i className={i < examIndex ? 'filled' : ''} key={`${card.id}-${i}`} />)}</div>
+                <p className="exam-count">{examIndex} dari {examCards.length} selesai</p>
+              </div>
+            </aside>
+          </div>
+        </section>
+      )}
+
+      {view === 'exam-result' && (
+        <section className="summary-page page-enter">
+          <p className="eyebrow">hasil ujian</p>
+          <h1 ref={pageTitleRef} tabIndex={-1}>Ujian selesai,<br /><em>ini yang perlu diulang.</em></h1>
+          <div className="summary-grid">
+            <aside className="stats-note">
+              <div className="tape" />
+              <p className="note-label">nilai ujian</p>
+              <div className="stat-big">{examScore}<span>%</span></div>
+              <p className="stat-caption">{examCorrectCount} benar dari {examCards.length} soal</p>
+              <div className="progress-line" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={examScore} aria-label="Nilai ujian"><span style={{ width: `${examScore > 0 ? Math.max(MIN_PROGRESS_WIDTH, examScore) : 0}%` }} /></div>
+              <div className="stat-row"><span>Kartu paling sering gagal</span><strong>{examCards.filter((card) => (failures[card.id] ?? 0) > 0).length} ikut diuji</strong></div>
+              <div className="stat-row"><span>Salah</span><strong>{examPicks.length - examCorrectCount} kartu</strong></div>
+            </aside>
+            <div className="summary-review">
+              <p className="note-label">hasil per soal</p>
+              <div className="review-kana-grid">
+                {examPicks.map((pick, i) => (
+                  <div className={`review-kana ${pick.correct ? 'exam-ok' : 'exam-no'}`} key={`${pick.card.id}-${i}`}>
+                    <span className="review-kana-char" lang="ja">{pick.card.kana}</span>
+                    <small>{pick.correct ? pick.card.romaji : `${pick.answer || 'kosong'} → ${pick.card.romaji}`}</small>
+                  </div>
+                ))}
+              </div>
+              <div className="summary-actions">
+                <button className="primary-action" type="button" onClick={startExam}>Ulangi ujian</button>
+                <button className="back-button" type="button" onClick={() => setView('dashboard')}>kembali ke meja</button>
+              </div>
+            </div>
           </div>
         </section>
       )}
